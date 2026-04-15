@@ -1,0 +1,104 @@
+# =============================================================================
+# RLHF Pipeline Configuration
+# All three phases (SFT, Reward Model, PPO) share this single file.
+# Override any value via CLI with --<section>.<key>=<value>.
+# =============================================================================
+
+# ── Shared model settings ─────────────────────────────────────────────────────
+model:
+  base_model: "gpt2"                    # HF model ID or local path
+  tokenizer: "gpt2"                     # usually matches base_model
+  max_length: 512                       # max tokens per sequence (prompt + response)
+  pad_token: "eos"                      # GPT-2 has no pad token; use EOS
+
+# ── Dataset settings ──────────────────────────────────────────────────────────
+data:
+  dataset_name: "Anthropic/hh-rlhf"
+  dataset_subset: "harmless-base"       # subset of HH-RLHF to use
+  max_train_samples: 20000              # set null to use full split
+  max_eval_samples: 1000
+  seed: 42
+
+# ── Phase 1: Supervised Fine-Tuning ──────────────────────────────────────────
+sft:
+  output_dir: "./outputs/sft"
+  num_train_epochs: 1
+  per_device_train_batch_size: 8
+  per_device_eval_batch_size: 8
+  gradient_accumulation_steps: 4       # effective batch = 8 * 4 = 32
+  learning_rate: 2.0e-5
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  fp16: true                            # set false if no GPU
+  logging_steps: 50
+  eval_steps: 200
+  save_steps: 500
+  save_total_limit: 2
+
+  # MLflow experiment tracking (run `mlflow ui --backend-store-uri ./mlruns` to visualise)
+  mlflow:
+    tracking_uri: "./mlruns"
+    experiment_name: "sft-training"
+    run_name: "sft-gpt2"
+
+# ── Phase 2: Reward Model Training ────────────────────────────────────────────
+reward_model:
+  output_dir: "./outputs/reward_model"
+  sft_checkpoint: "./outputs/sft"       # initialise RM backbone from SFT model
+  freeze_backbone: false                # set true to train only the scalar head
+  num_train_epochs: 1
+  per_device_train_batch_size: 8
+  per_device_eval_batch_size: 8
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-5
+  lr_scheduler_type: "linear"
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  fp16: true
+  logging_steps: 50
+  eval_steps: 200
+  save_steps: 500
+  save_total_limit: 2
+  report_to: "wandb"
+
+# ── Phase 3: PPO Fine-Tuning ──────────────────────────────────────────────────
+ppo:
+  output_dir: "./outputs/ppo"
+  sft_checkpoint: "./outputs/sft"       # used as both active policy and frozen ref
+  reward_model_checkpoint: "./outputs/reward_model"
+
+  # PPO-specific
+  learning_rate: 1.41e-5
+  ppo_epochs: 4                         # gradient steps per batch of rollouts
+  batch_size: 256                       # number of prompts collected per update
+  mini_batch_size: 32                   # mini-batch size for gradient steps
+  gradient_accumulation_steps: 1
+
+  # KL penalty — controls deviation from the reference policy
+  # Higher β → stays closer to SFT; lower β → more reward optimisation
+  init_kl_coef: 0.2                     # initial coefficient for KL term
+  adap_kl_ctrl: true                    # adaptively adjust KL coefficient
+  target_kl: 6.0                        # target KL divergence (adaptive KL)
+
+  # PyTorch PPO loss coefficients (used by ppo_utils.ppo_loss)
+  clip_eps: 0.2                         # PPO clipping epsilon
+  vf_coef: 0.1                          # value function loss weight
+  entropy_coef: 0.01                    # entropy bonus weight
+  gae_lambda: 0.95                      # GAE λ smoothing parameter
+  gamma: 1.0                            # discount factor (1.0 = no discounting)
+  weight_decay: 0.0                     # AdamW weight decay for PPO optimizer
+
+  # Generation settings (rollout)
+  max_new_tokens: 128
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: true
+
+  # Training duration
+  num_train_epochs: 1                   # epochs over the prompt dataset
+  fp16: true
+  logging_steps: 10
+  save_steps: 200
+  report_to: "wandb"
